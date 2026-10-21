@@ -1,0 +1,7 @@
+.env
+.venv/
+__pycache__/
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+node_modules/

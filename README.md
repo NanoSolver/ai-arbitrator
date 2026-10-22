@@ -7,15 +7,17 @@ AI-Arbitrator is a prototype escrow workflow for client-freelancer work. A clien
 - Solidity escrow contract and Foundry tests are in `contracts/`.
 - The Go API, PostgreSQL persistence, chain listener, and grading worker are in `backend/`.
 - The FastAPI rubric and grading service is in `ai-service/`.
-- The React frontend is in `frontend/` and supports the create, rubric confirmation, dev funding, submission, and verdict flow.
-- The current frontend is a local dev-mode demo UI. Wallet connection and real on-chain transaction controls are not implemented yet.
+- The React frontend is in `frontend/` and has email/password sign-up and sign-in, with separate client and freelancer workspaces.
+- Accounts and expiring sessions are stored in PostgreSQL. Passwords are stored as bcrypt hashes; the browser receives an HttpOnly session cookie. Job APIs enforce account role and agreement ownership.
+- Email verification, password recovery, and wallet-provider connection are not implemented yet. Client and freelancer wallets are supplied through the account form; real transaction signing still requires a wallet connection.
+- Wallet connection and real on-chain transaction controls are not implemented yet.
 - The backend currently supports `DEV_MODE=true` for exercising the workflow without a deployed contract. Dev funding is simulated and does not send a blockchain transaction.
 - A Sepolia deployment and real-wallet flow are not included in the current setup.
 
 ## Architecture
 
 ```text
-Client / Freelancer UI (planned)
+Client / Freelancer UI
         |
         v
 Go API + PostgreSQL <----> FastAPI grading service
@@ -24,7 +26,7 @@ Go API + PostgreSQL <----> FastAPI grading service
 Escrow contract (Sepolia when configured)
 ```
 
-The backend proposes a rubric, stores the client's confirmed requirements, and calculates a requirements hash. A freelancer's submission is hashed before it is graded. In chain-enabled mode, the frontend submits that hash to the contract; the backend listener and worker grade the confirmed submission and the oracle relayer settles the escrow.
+The backend proposes a rubric, stores the client's confirmed requirements, and calculates a requirements hash. A freelancer's submission is hashed before it is graded. In chain-enabled mode, the frontend submits that hash to the contract; the backend listener and worker grade the confirmed submission and the oracle relayer settles the escrow. Freelancers can submit up to three revised versions after rejected reviews; if the fourth submission is rejected, escrow is refunded to the client.
 
 ## Local development
 

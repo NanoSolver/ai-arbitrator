@@ -33,10 +33,11 @@ const (
 )
 
 // MaxRejections mirrors AIArbitrator.MAX_REJECTIONS in the contract.
-const MaxRejections = 2
+const MaxRejections = 3
 
 type Job struct {
 	ID                  string  `gorm:"primaryKey;size:32"` // random, unguessable API identifier
+	ClientAccountID     *uint   `gorm:"index"`
 	OnchainID           *uint64 `gorm:"uniqueIndex"`
 	Title               string
 	Description         string  `gorm:"type:text"`
@@ -79,4 +80,24 @@ type Submission struct {
 type ChainState struct {
 	Name  string `gorm:"primaryKey"`
 	Value string
+}
+
+// Account stores registered application users. Passwords are bcrypt hashes only.
+type Account struct {
+	ID           uint   `gorm:"primaryKey"`
+	Name         string `gorm:"size:120;not null"`
+	Email        string `gorm:"size:254;not null;uniqueIndex"`
+	PasswordHash string `gorm:"size:60;not null" json:"-"`
+	Role         string `gorm:"size:16;not null;index"`
+	Wallet       string `gorm:"size:42;not null;index"`
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// AccountSession stores only a SHA-256 hash of the opaque browser session token.
+type AccountSession struct {
+	TokenHash string    `gorm:"primaryKey;size:64"`
+	AccountID uint      `gorm:"not null;index"`
+	ExpiresAt time.Time `gorm:"not null;index"`
+	CreatedAt time.Time
 }

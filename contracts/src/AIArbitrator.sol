@@ -28,7 +28,7 @@ contract AIArbitrator {
     }
 
     // ───────────────────────── Storage ─────────────────────────
-    uint8 public constant MAX_REJECTIONS = 2;
+    uint8 public constant MAX_REJECTIONS = 3;
 
     address public owner;
     address public oracle;

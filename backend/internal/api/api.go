@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -35,25 +36,33 @@ func New(s *service.Service, cfg config.Config) *API { return &API{S: s, Cfg: cf
 
 func (a *API) Routes(r *gin.Engine) {
 	r.Use(cors.New(cors.Config{
-		AllowOrigins: a.Cfg.CORSOrigins,
-		AllowMethods: []string{"GET", "POST", "OPTIONS"},
-		AllowHeaders: []string{"Content-Type"},
-		MaxAge:       12 * time.Hour,
+		AllowOrigins:     a.Cfg.CORSOrigins,
+		AllowMethods:     []string{"GET", "POST", "OPTIONS"},
+		AllowHeaders:     []string{"Content-Type"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
 	}))
 
 	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
 
 	g := r.Group("/api")
 	g.GET("/config", a.getConfig)
-	g.POST("/jobs", a.createJob)
-	g.GET("/jobs", a.listJobs)
-	g.GET("/jobs/:id", a.getJob)
-	g.POST("/jobs/:id/confirm", a.confirmJob)
-	g.POST("/jobs/:id/submissions", a.createSubmission)
-	g.GET("/jobs/:id/verdict", a.getVerdict)
+	g.POST("/auth/signup", a.signUp)
+	g.POST("/auth/signin", a.signIn)
+	authenticated := g.Group("")
+	authenticated.Use(a.requireSession())
+	authenticated.GET("/auth/me", a.currentAccount)
+	authenticated.POST("/auth/signout", a.signOut)
+	authenticated.POST("/jobs", a.createJob)
+	authenticated.GET("/jobs", a.listJobs)
+	authenticated.GET("/jobs/:id", a.getJob)
+	authenticated.POST("/jobs/:id/confirm", a.confirmJob)
+	authenticated.POST("/jobs/:id/submissions", a.createSubmission)
+	authenticated.POST("/jobs/:id/retry", a.retryFailedSubmission)
+	authenticated.GET("/jobs/:id/verdict", a.getVerdict)
 
 	if a.Cfg.DevMode {
-		g.POST("/dev/jobs/:id/fund", a.devFund)
+		authenticated.POST("/dev/jobs/:id/fund", a.devFund)
 	}
 }
 
@@ -80,6 +89,9 @@ func (a *API) loadJob(c *gin.Context) (*models.Job, bool) {
 	}
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "database error")
+		return nil, false
+	}
+	if !a.requireJobOwner(c, job) {
 		return nil, false
 	}
 	return &job, true
@@ -150,6 +162,9 @@ func (a *API) getConfig(c *gin.Context) {
 
 // POST /api/jobs: the client describes the job; the AI proposes an acceptance rubric.
 func (a *API) createJob(c *gin.Context) {
+	if !a.requireRole(c, "client") {
+		return
+	}
 	var in struct {
 		Title       string `json:"title" binding:"required"`
 		Description string `json:"description" binding:"required"`
@@ -184,13 +199,17 @@ func (a *API) createJob(c *gin.Context) {
 	}
 	criteriaJSON, _ := json.Marshal(criteria)
 
+	account, _ := accountFromContext(c)
+	clientAccountID := account.ID
 	job := models.Job{
-		ID:          service.RandHex(16),
-		Title:       in.Title,
-		Description: in.Description,
-		Freelancer:  freelancer,
-		Criteria:    string(criteriaJSON),
-		Status:      models.StatusDraft,
+		ID:              service.RandHex(16),
+		ClientAccountID: &clientAccountID,
+		Title:           in.Title,
+		Description:     in.Description,
+		Client:          account.Wallet,
+		Freelancer:      freelancer,
+		Criteria:        string(criteriaJSON),
+		Status:          models.StatusDraft,
 	}
 	if err := a.S.DB.Create(&job).Error; err != nil {
 		fail(c, http.StatusInternalServerError, "database error")
@@ -202,6 +221,9 @@ func (a *API) createJob(c *gin.Context) {
 // POST /api/jobs/:id/confirm: the client approves (optionally edits) the rubric. We hash the exact payload;
 // the client then passes requirementsHash to createJob on-chain.
 func (a *API) confirmJob(c *gin.Context) {
+	if !a.requireRole(c, "client") {
+		return
+	}
 	job, ok := a.loadJob(c)
 	if !ok {
 		return
@@ -278,22 +300,16 @@ func (a *API) confirmJob(c *gin.Context) {
 }
 
 func (a *API) listJobs(c *gin.Context) {
-	q := a.S.DB.Model(&models.Job{}).Where("status <> ?", models.StatusDraft) // drafts are private to whoever holds the id
-	if v := c.Query("client"); v != "" {
-		addr, ok := normAddr(v)
-		if !ok {
-			fail(c, http.StatusBadRequest, "invalid client address")
-			return
-		}
-		q = q.Where("client = ?", addr)
+	account, ok := accountFromContext(c)
+	if !ok {
+		fail(c, http.StatusUnauthorized, "sign in required")
+		return
 	}
-	if v := c.Query("freelancer"); v != "" {
-		addr, ok := normAddr(v)
-		if !ok {
-			fail(c, http.StatusBadRequest, "invalid freelancer address")
-			return
-		}
-		q = q.Where("freelancer = ?", addr)
+	q := a.S.DB.Model(&models.Job{})
+	if account.Role == "client" {
+		q = q.Where("client_account_id = ? OR (client_account_id IS NULL AND client = ?)", account.ID, account.Wallet)
+	} else {
+		q = q.Where("freelancer = ? AND status <> ?", account.Wallet, models.StatusDraft)
 	}
 	var jobs []models.Job
 	if err := q.Order("created_at desc").Limit(100).Find(&jobs).Error; err != nil {
@@ -327,6 +343,9 @@ func (a *API) getJob(c *gin.Context) {
 // the frontend then calls submitWork(onchainJobId, submissionHash) on-chain, and the listener starts grading
 // once that transaction is confirmed. The oracle therefore only ever acts on an on-chain Submitted job.
 func (a *API) createSubmission(c *gin.Context) {
+	if !a.requireRole(c, "freelancer") {
+		return
+	}
 	job, ok := a.loadJob(c)
 	if !ok {
 		return
@@ -418,8 +437,51 @@ func (a *API) getVerdict(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"jobStatus": job.Status, "submission": subView(sub, false)})
 }
 
+// POST /api/jobs/:id/retry requeues the latest failed grading attempt. It cannot repeat a settlement.
+func (a *API) retryFailedSubmission(c *gin.Context) {
+	if !a.requireRole(c, "client") {
+		return
+	}
+	job, ok := a.loadJob(c)
+	if !ok {
+		return
+	}
+	if job.Status != models.StatusSubmitted {
+		fail(c, http.StatusConflict, "job is not awaiting a review")
+		return
+	}
+	var sub models.Submission
+	if err := a.S.DB.Where("job_id = ? AND status <> ?", job.ID, models.SubSuperseded).Order("id desc").First(&sub).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			fail(c, http.StatusNotFound, "submission not found")
+		} else {
+			fail(c, http.StatusInternalServerError, "database error")
+		}
+		return
+	}
+	if sub.Status != models.SubFailed || sub.Action != "" || sub.TxHash != "" {
+		fail(c, http.StatusConflict, "only a failed grading attempt can be retried")
+		return
+	}
+	result := a.S.DB.Model(&models.Submission{}).
+		Where("id = ? AND status = ? AND action = ? AND tx_hash = ?", sub.ID, models.SubFailed, "", "").
+		Updates(map[string]any{"status": models.SubQueued, "grade_tries": 0, "error": ""})
+	if result.Error != nil {
+		fail(c, http.StatusInternalServerError, "database error")
+		return
+	}
+	if result.RowsAffected != 1 {
+		fail(c, http.StatusConflict, "submission is no longer available to retry")
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"submissionId": sub.ID, "status": models.SubQueued})
+}
+
 // POST /api/dev/jobs/:id/fund (DEV_MODE only): pretend the client funded the job on-chain.
 func (a *API) devFund(c *gin.Context) {
+	if !a.requireRole(c, "client") {
+		return
+	}
 	job, ok := a.loadJob(c)
 	if !ok {
 		return
@@ -428,14 +490,12 @@ func (a *API) devFund(c *gin.Context) {
 		fail(c, http.StatusConflict, "job must be AWAITING_FUNDING (confirm the rubric first)")
 		return
 	}
-	var in struct {
-		Client string `json:"client"`
+	account, _ := accountFromContext(c)
+	client := account.Wallet
+	if client == "" {
+		client = common.BigToAddress(new(big.Int).SetUint64(uint64(account.ID))).Hex()
 	}
-	_ = c.ShouldBindJSON(&in)
-	client, ok := normAddr(in.Client)
-	if !ok {
-		client = "0x0000000000000000000000000000000000000001"
-	}
+	client, _ = normAddr(client)
 	var maxID uint64
 	a.S.DB.Model(&models.Job{}).Select("COALESCE(MAX(onchain_id), 0)").Scan(&maxID)
 	err := a.S.DB.Model(&models.Job{}).Where("id = ?", job.ID).Updates(map[string]any{

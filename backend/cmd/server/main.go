@@ -30,7 +30,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("database: %v (is `docker compose up -d` running?)", err)
 	}
-	if err := db.AutoMigrate(&models.Job{}, &models.Submission{}, &models.ChainState{}); err != nil {
+	if err := db.AutoMigrate(&models.Account{}, &models.AccountSession{}, &models.Job{}, &models.Submission{}, &models.ChainState{}); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
 

@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import os
 import secrets
 
@@ -12,6 +14,7 @@ from judge import generate_rubric, grade_submission  # noqa: E402
 from schemas import GradeRequest, GradeResponse, RubricRequest, RubricResponse  # noqa: E402
 
 app = FastAPI(title="AI-Arbitrator AI Service")
+log = logging.getLogger("uvicorn.error")
 
 INTERNAL_KEY = os.getenv("INTERNAL_API_KEY", "")
 
@@ -32,7 +35,8 @@ async def rubric(req: RubricRequest) -> RubricResponse:
     try:
         criteria = await generate_rubric(req.title, req.description)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Rubric generation failed: {e}") from e
+        log.error("rubric generation failed: %s: %s", type(e).__name__, e)
+        raise HTTPException(status_code=502, detail=f"Rubric generation failed: {type(e).__name__}: {e}") from e
     return RubricResponse(criteria=criteria)
 
 
@@ -48,6 +52,9 @@ async def grade(req: GradeRequest) -> GradeResponse:
             raise HTTPException(status_code=422, detail=f"Could not fetch link: {e}") from e
 
     try:
-        return await grade_submission(req.description, req.criteria, submission, req.submission_type)
+        return await asyncio.wait_for(
+            grade_submission(req.description, req.criteria, submission, req.submission_type), timeout=100
+        )
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Grading failed: {e}") from e
+        log.error("grading failed: %s: %s", type(e).__name__, e)
+        raise HTTPException(status_code=502, detail=f"Grading failed: {type(e).__name__}: {e}") from e

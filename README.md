@@ -7,7 +7,8 @@ AI-Arbitrator is a prototype escrow workflow for client-freelancer work. A clien
 - Solidity escrow contract and Foundry tests are in `contracts/`.
 - The Go API, PostgreSQL persistence, chain listener, and grading worker are in `backend/`.
 - The FastAPI rubric and grading service is in `ai-service/`.
-- The React frontend has not been added yet.
+- The React frontend is in `frontend/` and supports the create, rubric confirmation, dev funding, submission, and verdict flow.
+- The current frontend is a local dev-mode demo UI. Wallet connection and real on-chain transaction controls are not implemented yet.
 - The backend currently supports `DEV_MODE=true` for exercising the workflow without a deployed contract. Dev funding is simulated and does not send a blockchain transaction.
 - A Sepolia deployment and real-wallet flow are not included in the current setup.
 
@@ -60,6 +61,16 @@ curl -sS http://localhost:8000/health
 ```
 
 The backend reads `backend/.env`; the AI service reads `ai-service/.env`. Set `INTERNAL_API_KEY` to the same local value in both files. The provided Docker Compose file exposes PostgreSQL on `127.0.0.1:5433`.
+
+Run the frontend in **[Terminal 3 — Git Bash, frontend]** after PostgreSQL has started:
+
+```bash
+cd ~/ai-arbitrator/frontend
+pnpm install
+pnpm dev
+```
+
+Open `http://localhost:5173`. Vite proxies `/api` and `/health` requests to the Go backend on port 8080.
 
 Health endpoints:
 
